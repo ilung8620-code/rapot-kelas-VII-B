@@ -26,7 +26,7 @@ body{font-family:"Times New Roman",Times,serif}
 .identity-list td{padding:1.6mm .6mm;vertical-align:top}
 .identity-list .num{width:9mm;text-align:right;padding-right:2.4mm}
 .identity-list .label{width:57mm}.identity-list .colon{width:5mm;text-align:center}.identity-list .sub{padding-left:9mm}
-.signature-one{position:absolute;top:209mm;right:48mm;width:67mm;text-align:center;font-size:10.8pt;line-height:1.18}
+.signature-one{position:absolute;top:225mm;right:48mm;width:67mm;text-align:center;font-size:10.8pt;line-height:1.18;}
 .signature-one .space{height:20.5mm}.signature-one .sign-name{text-decoration:underline;font-weight:700;margin-bottom:1mm}
 
 /* HALAMAN 3 - NILAI 1-11 */
