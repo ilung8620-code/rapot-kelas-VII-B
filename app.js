@@ -59,6 +59,195 @@ function safeId(value) {
   return String(value || "").trim().replace(/[\/#?\[\]]/g, "-").replace(/\s+/g, "-").toLowerCase();
 }
 
+
+// ============================================================
+// KOMPATIBILITAS DATA RAPOR LAMA + FORMAT V2
+// Mendukung dokumen lama seperti:
+//   111341000__2025-2026__sGANJIL
+// dengan nilai langsung di root dokumen (PAI, IPA, BING, dst.),
+// sekaligus format V2 yang memakai grades.{KODE_MAPEL}.
+// ============================================================
+const SUBJECT_FIELD_ALIASES = {
+  PAI: ["PAI", "PABP", "AGAMA", "PENDIDIKAN_AGAMA_ISLAM"],
+  PANCASILA: ["PANCASILA", "PPKN", "PKN", "PENDIDIKAN_PANCASILA"],
+  MATEMATIKA: ["MATEMATIKA", "MTK", "MATH"],
+  BINDO: ["BINDO", "BIND", "BIN", "BAHASA_INDONESIA", "INDONESIA"],
+  IPA: ["IPA", "SAINS"],
+  IPS: ["IPS"],
+  BING: ["BING", "BINGGRIS", "BAHASA_INGGRIS", "INGGRIS", "ENGLISH"],
+  PJOK: ["PJOK", "PENJAS", "OLAHRAGA"],
+  INFORMATIKA: ["INFORMATIKA", "TIK"],
+  SENI: ["SENI", "SENI_BUDAYA", "SENIBUDAYA"],
+  MADURA: ["MADURA", "BAHASA_MADURA", "MULOK_MADURA"],
+  ASWAJA: ["ASWAJA", "ASWAJA_AN_NAHDLIYAH"]
+};
+
+function normalizedFieldName(value) {
+  return String(value ?? "").trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+}
+
+function objectValueByAliases(obj, aliases=[]) {
+  if (!obj || typeof obj !== "object") return undefined;
+  const keyMap = new Map(Object.keys(obj).map(k => [normalizedFieldName(k), k]));
+  for (const alias of aliases) {
+    const realKey = keyMap.get(normalizedFieldName(alias));
+    if (realKey !== undefined) return obj[realKey];
+  }
+  return undefined;
+}
+
+function firstMeaningful(...values) {
+  for (const value of values) {
+    if (value === 0 || value === false) return value;
+    if (value !== undefined && value !== null && String(value).trim() !== "") return value;
+  }
+  return "";
+}
+
+function normalizeAcademicYear(value) {
+  const raw = String(value ?? "").trim();
+  const years = raw.match(/(?:19|20)\d{2}/g);
+  if (years && years.length >= 2) return `${years[0]}/${years[1]}`;
+  return raw;
+}
+
+function academicYearKey(value) {
+  const normalized = normalizeAcademicYear(value);
+  const years = normalized.match(/(?:19|20)\d{2}/g);
+  if (years && years.length >= 2) return `${years[0]}${years[1]}`;
+  return normalized.toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+function normalizeSemester(value) {
+  const raw = String(value ?? "").trim().toUpperCase().replace(/[._-]+/g, " ");
+  if (!raw) return "";
+  if (["1", "01", "GANJIL", "GASAL", "SATU", "SEMESTER 1", "SEMESTER I", "S1", "I"].includes(raw)) return "1";
+  if (["2", "02", "GENAP", "DUA", "SEMESTER 2", "SEMESTER II", "S2", "II"].includes(raw)) return "2";
+  if (/\b(GANJIL|GASAL)\b/.test(raw)) return "1";
+  if (/\bGENAP\b/.test(raw)) return "2";
+  if (/\b(?:SEMESTER\s*)?1\b/.test(raw)) return "1";
+  if (/\b(?:SEMESTER\s*)?2\b/.test(raw)) return "2";
+  return String(value ?? "").trim();
+}
+
+function sameAcademicYear(a, b) {
+  const ka = academicYearKey(a), kb = academicYearKey(b);
+  return Boolean(ka && kb && ka === kb);
+}
+
+function sameSemester(a, b) {
+  const sa = normalizeSemester(a), sb = normalizeSemester(b);
+  return Boolean(sa && sb && sa === sb);
+}
+
+function parseLegacyReportId(id) {
+  const text = String(id || "");
+  const match = text.match(/^(.*?)__(.*?)__s(.+)$/i);
+  if (!match) return {studentToken:"", academicYear:"", semester:""};
+  return {
+    studentToken: match[1],
+    academicYear: normalizeAcademicYear(match[2]),
+    semester: normalizeSemester(match[3])
+  };
+}
+
+function identityKey(value) {
+  return String(value ?? "").trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function resolveStudentId(raw, reportId) {
+  const parsed = parseLegacyReportId(reportId);
+  const candidates = [
+    raw?.studentId, raw?.studentID, raw?.student_id,
+    raw?.nisn, raw?.NISN, raw?.nis, raw?.NIS,
+    parsed.studentToken
+  ].filter(v => String(v ?? "").trim());
+
+  for (const candidate of candidates) {
+    const key = identityKey(candidate);
+    const safe = safeId(candidate);
+    const student = state.students.find(s =>
+      identityKey(s.id) === key || safeId(s.id) === safe ||
+      identityKey(s.nisn) === key || identityKey(s.nis) === key
+    );
+    if (student) return student.id;
+  }
+  return candidates.length ? safeId(candidates[0]) : "";
+}
+
+function normalizedScoreValue(value) {
+  if (value === undefined || value === null || String(value).trim() === "") return "";
+  const n = Number(value);
+  return Number.isFinite(n) ? n : "";
+}
+
+function readReportScore(raw, code) {
+  const aliases = SUBJECT_FIELD_ALIASES[code] || [code];
+  const nested = objectValueByAliases(raw?.grades, aliases);
+  if (nested !== undefined) return normalizedScoreValue(nested);
+  const direct = objectValueByAliases(raw, aliases);
+  return normalizedScoreValue(direct);
+}
+
+function readReportCompetency(raw, code) {
+  const aliases = SUBJECT_FIELD_ALIASES[code] || [code];
+  const nested = objectValueByAliases(raw?.competencies, aliases);
+  if (nested !== undefined && nested !== null && String(nested).trim()) return String(nested).trim();
+
+  const directAliases = [];
+  aliases.forEach(a => {
+    directAliases.push(`CK_${a}`, `CAPAIAN_${a}`, `KOMPETENSI_${a}`);
+  });
+  const direct = objectValueByAliases(raw, directAliases);
+  return direct === undefined || direct === null ? "" : String(direct).trim();
+}
+
+function toNonNegativeNumber(value, fallback=0) {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function normalizeReportDoc(id, raw={}) {
+  const parsed = parseLegacyReportId(id);
+  const grades = {};
+  const competencies = {};
+  SUBJECTS.forEach(sub => {
+    grades[sub.code] = readReportScore(raw, sub.code);
+    competencies[sub.code] = readReportCompetency(raw, sub.code);
+  });
+
+  const attendanceRaw = raw.attendance && typeof raw.attendance === "object" ? raw.attendance : {};
+  const studentId = resolveStudentId(raw, id);
+  const academicYear = normalizeAcademicYear(firstMeaningful(
+    raw.academicYear, raw.tahunPelajaran, raw.TAHUN_PELAJARAN,
+    raw.schoolYear, raw.YEAR, parsed.academicYear
+  ));
+  const semester = normalizeSemester(firstMeaningful(
+    raw.semester, raw.SEMESTER, raw.term, raw.TERM, parsed.semester
+  ));
+
+  return {
+    ...raw,
+    id,
+    studentId,
+    academicYear,
+    semester,
+    grades,
+    competencies,
+    spiritual: String(firstMeaningful(raw.spiritual, raw.SPIRITUAL, defaultReportExtras.spiritual)),
+    social: String(firstMeaningful(raw.social, raw.SOSIAL, defaultReportExtras.social)),
+    scout: String(firstMeaningful(raw.scout, raw.PRAMUKA, raw.ekstrakurikuler, defaultReportExtras.scout)),
+    teacherNote: String(firstMeaningful(raw.teacherNote, raw.CATATAN_WALI, raw.catatanWali, defaultReportExtras.teacherNote)),
+    attendance: {
+      sick: toNonNegativeNumber(firstMeaningful(attendanceRaw.sick, attendanceRaw.sakit, raw.SAKIT, raw.sakit, 0)),
+      permit: toNonNegativeNumber(firstMeaningful(attendanceRaw.permit, attendanceRaw.izin, raw.IZIN, raw.izin, 0)),
+      absent: toNonNegativeNumber(firstMeaningful(attendanceRaw.absent, attendanceRaw.alfa, raw.ALFA, raw.alfa, raw.TANPA_KETERANGAN, 0))
+    },
+    _sourceId: id,
+    _legacyFormat: !(raw.grades && typeof raw.grades === "object")
+  };
+}
+
 function dataUrlByteSize(dataUrl) {
   const base64 = String(dataUrl || "").split(",")[1] || "";
   return Math.ceil(base64.length * 0.75);
@@ -122,16 +311,70 @@ function autoCompetencyFor(sub, score) {
 }
 
 function periodKey(studentId, year=state.settings.academicYear, semester=state.settings.semester) {
-  return `${studentId}__${safeId(year)}__s${semester}`;
+  return `${studentId}__${safeId(normalizeAcademicYear(year))}__s${normalizeSemester(semester)}`;
+}
+
+function reportMatchesCurrentPeriod(report) {
+  return sameAcademicYear(report?.academicYear, state.settings.academicYear) && sameSemester(report?.semester, state.settings.semester);
 }
 
 function currentReport(studentId) {
-  return state.reports.find(r => r.studentId === studentId && String(r.academicYear) === String(state.settings.academicYear) && String(r.semester) === String(state.settings.semester));
+  const matches = state.reports.filter(r => r.studentId === studentId && reportMatchesCurrentPeriod(r));
+  // Jika ada format V2 dan format lama untuk siswa/periode yang sama, prioritaskan format V2.
+  return matches.find(r => !r._legacyFormat) || matches[0];
+}
+
+function reportHasAnyScore(report) {
+  return Boolean(report && SUBJECTS.some(s => report.grades?.[s.code] !== "" && report.grades?.[s.code] != null));
 }
 
 function reportAverage(report) {
   const scores = SUBJECTS.map(s => Number(report?.grades?.[s.code])).filter(n => Number.isFinite(n) && n >= 0 && n <= 100);
   return scores.length ? scores.reduce((a,b)=>a+b,0)/scores.length : null;
+}
+
+function canonicalReportData(report, student) {
+  return {
+    studentId: student.id,
+    studentName: student.name || report.studentName || "",
+    className: student.className || report.className || state.settings.defaultClass,
+    phase: student.phase || report.phase || state.settings.defaultPhase,
+    academicYear: normalizeAcademicYear(state.settings.academicYear),
+    semester: normalizeSemester(state.settings.semester),
+    grades: {...(report.grades || {})},
+    competencies: {...(report.competencies || {})},
+    spiritual: report.spiritual || defaultReportExtras.spiritual,
+    social: report.social || defaultReportExtras.social,
+    scout: report.scout || defaultReportExtras.scout,
+    attendance: {
+      sick: toNonNegativeNumber(report.attendance?.sick, 0),
+      permit: toNonNegativeNumber(report.attendance?.permit, 0),
+      absent: toNonNegativeNumber(report.attendance?.absent, 0)
+    },
+    teacherNote: report.teacherNote || defaultReportExtras.teacherNote,
+    migratedFrom: report._legacyFormat ? report._sourceId : (report.migratedFrom || ""),
+    updatedAt: serverTimestamp()
+  };
+}
+
+async function ensureCanonicalReport(studentId) {
+  const report = currentReport(studentId);
+  if (!report || !reportHasAnyScore(report)) throw new Error("Nilai siswa untuk periode ini belum ditemukan.");
+  const student = state.students.find(s => s.id === studentId);
+  if (!student) throw new Error("Data siswa tidak ditemukan.");
+
+  const canonicalId = periodKey(studentId);
+  const canonicalInState = state.reports.find(r => r.id === canonicalId && !r._legacyFormat);
+  if (canonicalInState) return canonicalId;
+
+  // Membuat salinan format V2 hanya saat diperlukan (misalnya sebelum cetak).
+  // Dokumen lama TIDAK dihapus, sehingga data asal tetap aman.
+  const data = canonicalReportData(report, student);
+  await setDoc(doc(db, "reports", canonicalId), data, {merge:true});
+  const normalized = normalizeReportDoc(canonicalId, {...data, updatedAt:null});
+  const idx = state.reports.findIndex(r => r.id === canonicalId);
+  if (idx >= 0) state.reports[idx] = normalized; else state.reports.push(normalized);
+  return canonicalId;
 }
 
 function setView(name) {
@@ -167,6 +410,9 @@ async function loadSettings() {
   } else {
     state.settings = {...defaultSettings, ...snap.data()};
   }
+  // Samakan format periode lama (mis. 2025-2026 / GANJIL) dengan format aplikasi (2025/2026 / 1).
+  state.settings.academicYear = normalizeAcademicYear(state.settings.academicYear) || defaultSettings.academicYear;
+  state.settings.semester = normalizeSemester(state.settings.semester) || defaultSettings.semester;
   populateSettingsForm();
   updateHeader();
 }
@@ -177,7 +423,8 @@ async function loadData() {
     getDocs(collection(db, "reports"))
   ]);
   state.students = studentSnap.docs.map(d => ({id:d.id, ...d.data()})).sort((a,b)=>(a.name||"").localeCompare(b.name||"", "id"));
-  state.reports = reportSnap.docs.map(d => ({id:d.id, ...d.data()}));
+  // Normalisasi semua dokumen report agar format lama dan V2 dibaca dengan cara yang sama.
+  state.reports = reportSnap.docs.map(d => normalizeReportDoc(d.id, d.data()));
   renderAll();
 }
 
@@ -189,9 +436,9 @@ function renderAll() {
 }
 
 function renderStats() {
-  const periodReports = state.reports.filter(r => String(r.academicYear)===String(state.settings.academicYear) && String(r.semester)===String(state.settings.semester));
   $("#statStudents").textContent = state.students.length;
-  $("#statReports").textContent = periodReports.filter(r => SUBJECTS.some(s => r.grades?.[s.code] !== "" && r.grades?.[s.code] != null)).length;
+  // Hitung per siswa agar dokumen lama + V2 untuk periode yang sama tidak terhitung dua kali.
+  $("#statReports").textContent = state.students.filter(s => reportHasAnyScore(currentReport(s.id))).length;
   $("#statClasses").textContent = new Set(state.students.map(s=>s.className).filter(Boolean)).size;
 }
 
@@ -406,15 +653,23 @@ async function saveGrade() {
   const id = periodKey(studentId);
   await setDoc(doc(db,"reports",id), data, {merge:true});
   const oldIndex = state.reports.findIndex(r=>r.id===id);
-  const localData = {...data, id};
+  const localData = normalizeReportDoc(id, {...data, updatedAt:null});
   if (oldIndex>=0) state.reports[oldIndex] = localData; else state.reports.push(localData);
   renderGrades(); renderStats();
   return id;
 }
 
-function openPrint(studentId) {
-  const url = `report.html?student=${encodeURIComponent(studentId)}&year=${encodeURIComponent(state.settings.academicYear)}&semester=${encodeURIComponent(state.settings.semester)}`;
-  window.open(url, "_blank", "noopener");
+async function openPrint(studentId) {
+  // Buka tab segera supaya tidak diblokir popup browser saat kita menunggu Firebase.
+  const win = window.open("about:blank", "_blank");
+  try {
+    await ensureCanonicalReport(studentId);
+    const url = `report.html?student=${encodeURIComponent(studentId)}&year=${encodeURIComponent(normalizeAcademicYear(state.settings.academicYear))}&semester=${encodeURIComponent(normalizeSemester(state.settings.semester))}`;
+    if (win) win.location.href = url; else window.location.href = url;
+  } catch (err) {
+    if (win) win.close();
+    throw err;
+  }
 }
 
 function normalizeKeys(row) {
@@ -494,8 +749,8 @@ async function importToFirebase(data) {
     const studentNew=studentOps.find(x=>x.id===studentId)?.data;
     const studentOld=state.students.find(x=>x.id===studentId);
     const student=studentNew||studentOld||{};
-    const academicYear=String(r.TAHUN_PELAJARAN||state.settings.academicYear).trim();
-    const semester=String(r.SEMESTER||state.settings.semester).trim();
+    const academicYear=normalizeAcademicYear(String(r.TAHUN_PELAJARAN||state.settings.academicYear).trim());
+    const semester=normalizeSemester(String(r.SEMESTER||state.settings.semester).trim());
     const grades={};
     const competencies={};
     SUBJECTS.forEach(sub=>{
@@ -588,9 +843,13 @@ async function initApp() {
       }
     }
   });
-  $("#gradesBody").addEventListener("click",e=>{
+  $("#gradesBody").addEventListener("click",async e=>{
     const grade=e.target.closest("[data-grade-student]"); const print=e.target.closest("[data-print-student]");
-    if(grade)openGrade(grade.dataset.gradeStudent); if(print&&!print.disabled)openPrint(print.dataset.printStudent);
+    if(grade) openGrade(grade.dataset.gradeStudent);
+    if(print&&!print.disabled){
+      try { await openPrint(print.dataset.printStudent); }
+      catch(err){ console.error(err); toast(err.message||"Gagal membuka pratinjau rapor.","error"); }
+    }
   });
 
   $("#gradeForm").addEventListener("submit",async e=>{e.preventDefault();try{await saveGrade();closeModal("gradeModal");toast("Nilai berhasil disimpan. Capaian kompetensi akan menyesuaikan otomatis.");}catch(err){toast(err.message||"Gagal menyimpan nilai.","error")}});
@@ -628,8 +887,8 @@ async function initApp() {
         schoolAddress:$("#schoolAddress").value.trim(),
         schoolCity:$("#schoolCity").value.trim(),
         reportDate:$("#reportDate").value,
-        academicYear:$("#academicYear").value.trim(),
-        semester:$("#semester").value,
+        academicYear:normalizeAcademicYear($("#academicYear").value.trim()),
+        semester:normalizeSemester($("#semester").value),
         defaultPhase:$("#defaultPhase").value.trim(),
         defaultClass:$("#defaultClass").value.trim(),
         homeroomName:$("#homeroomName").value.trim(),
