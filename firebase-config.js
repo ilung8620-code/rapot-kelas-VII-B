@@ -1,10 +1,11 @@
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
+// Ganti isi firebaseConfig di bawah dengan konfigurasi Web App dari Firebase Console.
+// Project Settings > General > Your apps > Web app > SDK setup and configuration > Config
+// Firebase Storage TIDAK diperlukan oleh aplikasi versi ini.
 
-// Your web app's Firebase configuration
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
+import { getAuth } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
+import { getFirestore } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
   apiKey: "AIzaSyD6L79sJgPihMKzein-wAUDahldc-K3eAQ",
@@ -15,7 +16,8 @@ const firebaseConfig = {
   appId: "1:514459569653:web:c899425d7c009315a5a4bc",
   measurementId: "G-1ES24E72DV"
 };
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
+const requiredKeys = ["apiKey","authDomain","projectId","messagingSenderId","appId"];
+export const firebaseReady = requiredKeys.every(key => firebaseConfig[key] && !String(firebaseConfig[key]).includes("GANTI_DENGAN"));
+export const app = initializeApp(firebaseConfig);
+export const auth = getAuth(app);
+export const db = getFirestore(app);
